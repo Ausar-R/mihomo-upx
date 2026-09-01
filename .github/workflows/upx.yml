@@ -1,0 +1,178 @@
+name: UPX Compress mihomo (linux-arm)
+
+on:
+  workflow_dispatch:              # 手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  upx-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout 当前仓库
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 安装工具 (jq / upx / gzip)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq upx gzip
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # ---------- 1. 获取 mihomo 最新 release ----------
+      - name: 获取 mihomo 最新 release
+        id: mihomo
+        run: |
+          JSON=$(curl -s https://api.github.com/repos/metacubex/mihomo/releases/latest)
+          TAG=$(echo "$JSON" | jq -r '.tag_name')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "$JSON" > mihomo-latest.json
+          echo "检测到 mihomo 最新版本: $TAG"
+
+      # ---------- 2. 判断当前仓库是否已存在该 tag（含 tag 为 null/空 的跳过）----------
+      - name: 检查当前仓库是否已存在该 tag
+        id: check
+        run: |
+          TAG="${{ steps.mihomo.outputs.tag }}"
+          # 处理 tag 为 null / 空 的情况
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "already=skip" >> "$GITHUB_OUTPUT"
+            echo "✔ tag 为空或 null，跳过本次全部任务"
+            exit 0
+          fi
+          # 查询当前仓库是否已存在同名的 tag
+          EXISTS=$(git ls-remote --tags origin "refs/tags/$TAG" | grep -c "refs/tags/$TAG" || true)
+          if [ "$EXISTS" -ge 1 ]; then
+            echo "already=$TAG" >> "$GITHUB_OUTPUT"
+            echo "✔ tag $TAG 已存在于当前仓库，跳过本次任务"
+          else
+            echo "当前仓库尚无 tag $TAG，继续处理"
+          fi
+
+      # ---------- 3. 下载 .gz 后缀的 linux + arm 资产 ----------
+      - name: 下载 .gz 后缀的 linux-arm 资产
+        id: download
+        if: steps.check.outputs.already == ''
+        run: |
+          mkdir -p raw
+          jq -r '.assets[]
+               | select(.name | test("\\.gz$"))
+               | select(.name | test("linux"; "i"))
+               | select(.name | test("arm"; "i"))
+               | "\(.browser_download_url) \(.name)"' mihomo-latest.json | \
+          while read -r url name; do
+            echo "⬇️  下载 $name"
+            curl -sL "$url" -o "raw/$name"
+          done
+          echo "共下载 $(ls raw | wc -l) 个 .gz 文件："
+          ls -la raw/
+
+          # 数量检查，小于 4 则标记跳过后续所有任务
+          COUNT=$(ls raw | wc -l)
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          if [ "$COUNT" -lt 4 ]; then
+            echo "insufficient=true" >> "$GITHUB_OUTPUT"
+            echo "⚠ 下载文件数 ($COUNT) 小于 4，跳过本次全部后续任务"
+          else
+            echo "✅ 下载文件数 ($COUNT) 正常，继续处理"
+          fi
+
+      # ---------- 4. 解压 + UPX 压缩（得到原始二进制，不打包） ----------
+      - name: 解压并 UPX 压缩
+        if: steps.check.outputs.already == '' && steps.download.outputs.insufficient != 'true'
+        run: |
+          mkdir -p dist
+          for f in raw/*.gz; do
+            [ -e "$f" ] || { echo "没有 .gz 文件可处理"; exit 0; }
+            bin="dist/$(basename "$f" .gz)"   # 去掉 .gz，保留原始二进制名
+            gzip -dc "$f" > "$bin"
+            chmod +x "$bin"
+            before=$(stat -c%s "$bin")
+            upx --lzma --best "$bin" || echo "⚠  UPX 对 $(basename "$bin") 失败，保留原文件"
+            after=$(stat -c%s "$bin")
+            echo "✔ $(basename "$bin"): $before → $after bytes"
+          done
+          ls -la dist/
+
+      # ---------- 5. 二次检查：对 tag 是否已存在的最终确认（含 tag 为 null/空 的跳过）----------
+      - name: 二次检查该 tag 是否已存在
+        id: recheck
+        if: steps.check.outputs.already == '' && steps.download.outputs.insufficient != 'true'
+        run: |
+          TAG="${{ steps.mihomo.outputs.tag }}"
+          # 处理 tag 为 null / 空 的情况
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "already=skip" >> "$GITHUB_OUTPUT"
+            echo "✔ tag 为空或 null，跳过本次全部任务"
+            exit 0
+          fi
+          # 二次查询当前仓库是否已存在同名的 tag
+          EXISTS=$(git ls-remote --tags origin "refs/tags/$TAG" | grep -c "refs/tags/$TAG" || true)
+          if [ "$EXISTS" -ge 1 ]; then
+            echo "already=$TAG" >> "$GITHUB_OUTPUT"
+            echo "⚠ 二次检查发现 tag $TAG 已存在，中止后续上传"
+          else
+            echo "tag $TAG 二次检查通过"
+          fi
+
+      # ---------- 6. 上传 UPX 后的原始二进制到 release ----------
+      - name: 上传 UPX 后的二进制到当前仓库 release
+        if: steps.check.outputs.already == '' && steps.download.outputs.insufficient != 'true' && steps.recheck.outputs.already == ''
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.mihomo.outputs.tag }}
+          name: ${{ steps.mihomo.outputs.tag }}
+          body: |
+            基于 [mihomo ${{ steps.mihomo.outputs.tag }}](https://github.com/metacubex/mihomo/releases/tag/${{ steps.mihomo.outputs.tag }}) linux-arm 二进制 UPX 。
+            - 平台：linux-arm（arm64 / armv5 / armv6 / armv7）
+            - 处理：UPX `--lzma` `--best`
+            - 上传格式：原始二进制（未打包）
+          files: dist/*
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---------- 7. 逐个上传文件到 文件频道 ----------
+      - name: 逐个上传文件到 Telegram 文件频道
+        if: steps.check.outputs.already == '' && steps.download.outputs.insufficient != 'true' && steps.recheck.outputs.already == ''
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHANNEL_FILES: ${{ secrets.TG_CHANNEL_FILES }}
+        run: |
+          TAG="${{ steps.mihomo.outputs.tag }}"
+          for f in dist/*; do
+            [ -e "$f" ] || continue
+            name=$(basename "$f")
+            size=$(stat -c%s "$f")
+            # 上传文件（每个文件单独一条消息）
+            result=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" -F "chat_id=${TG_CHANNEL_FILES}" -F "document=@${f}")
+            ok=$(echo "$result" | jq -r '.ok')
+            if [ "$ok" = "true" ]; then
+              echo "✅ 已上传 $name 到 文件频道"
+            else
+              echo "⚠ 上传 $name 失败：$(echo "$result" | jq -r '.description')"
+            fi
+          done
+
+      # ---------- 8. 发布"上新"消息到 通知频道 ----------
+      - name: 发送"上新"消息到 Telegram 通知频道
+        if: steps.check.outputs.already == '' && steps.download.outputs.insufficient != 'true' && steps.recheck.outputs.already == ''
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHANNEL_NEWS: ${{ secrets.TG_CHANNEL_NEWS }}
+        run: |
+          TAG="${{ steps.mihomo.outputs.tag }}"
+          FILE_COUNT=$(ls dist | wc -l)
+          MSG="🚀 mihomo ${TAG} 完成 UPX
+          文件存放：https://t.me/mihomo_upx_file"
+          curl -s -X POST \
+            "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHANNEL_NEWS}" \
+            -d text="${MSG}" \
+            -d parse_mode="HTML" \
+            | jq -r '.ok' | grep -q true && echo "✅ 上新消息已发送到通知频道" || echo "⚠ 上新消息发送失败"
