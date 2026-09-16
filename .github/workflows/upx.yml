@@ -34,7 +34,7 @@ jobs:
           echo "$JSON" > mihomo-latest.json
           echo "检测到 mihomo 最新版本: $TAG"
 
-      # ---------- 2. 判断当前仓库是否已存在该 tag（含 tag 为 null/空 的跳过）并按需创建 ----------
+      # ---------- 2. 判断当前仓库是否已存在该 tag（含 tag 为 null/空 的跳过） 并 按需推送 tag ----------
       - name: 检查当前仓库是否已存在该 tag
         id: check
         run: |
@@ -45,7 +45,7 @@ jobs:
             echo "✅ tag 为空或 null，跳过本次全部任务"
             exit 0
           fi
-          # 查询当前仓库是否已存在同名的 tag并按需创建
+          # 查询当前仓库是否已存在同名的 tag 并按需推送 tag
           EXISTS=$(git ls-remote --tags origin "refs/tags/$TAG" | grep -c "refs/tags/$TAG" || true)
           if [ "$EXISTS" -ge 1 ]; then
             echo "already=$TAG" >> "$GITHUB_OUTPUT"
@@ -54,14 +54,15 @@ jobs:
             git tag "$TAG"
             git push origin "refs/tags/$TAG"
             echo "created=yes" >> "$GITHUB_OUTPUT"
-            echo "✅ 已创建并推送 tag $TAG"
+            echo "✅ 已推送 tag $TAG"
           fi
 
-      # ---------- 3. 下载 .gz 后缀的 linux + arm 资产 ----------
+      # ---------- 3. 下载 .gz 后缀的 linux + arm 资产 并 按需删除 tag ----------
       - name: 下载 .gz 后缀的 linux-arm 资产
         id: download
         if: steps.check.outputs.already == ''
         run: |
+          TAG="${{ steps.mihomo.outputs.tag }}"
           mkdir -p raw
           jq -r '.assets[]
                | select(.name | test("\\.gz$"))
@@ -79,8 +80,9 @@ jobs:
           COUNT=$(ls raw | wc -l)
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           if [ "$COUNT" -lt 4 ]; then
+            git push origin --delete "refs/tags/$TAG"
             echo "insufficient=true" >> "$GITHUB_OUTPUT"
-            echo "⚠ 下载文件数 ($COUNT) 小于 4，跳过本次全部后续任务"
+            echo "⚠ 下载文件数 ($COUNT) 小于 4，删除 tag $TAG，跳过本次全部后续任务"
           else
             echo "✅ 下载文件数 ($COUNT) 正常，继续处理"
           fi
@@ -109,11 +111,9 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHANNEL_FILES: ${{ secrets.TG_CHANNEL_FILES }}
         run: |
-          TAG="${{ steps.mihomo.outputs.tag }}"
           for f in dist/*; do
             [ -e "$f" ] || continue
             name=$(basename "$f")
-            size=$(stat -c%s "$f")
             # 上传文件（每个文件单独一条消息）
             result=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" -F "chat_id=${TG_CHANNEL_FILES}" -F "document=@${f}")
             ok=$(echo "$result" | jq -r '.ok')
@@ -132,7 +132,6 @@ jobs:
           TG_CHANNEL_NEWS: ${{ secrets.TG_CHANNEL_NEWS }}
         run: |
           TAG="${{ steps.mihomo.outputs.tag }}"
-          FILE_COUNT=$(ls dist | wc -l)
           MSG="🚀 mihomo ${TAG} 完成 UPX
           文件存放：https://t.me/mihomo_upx_file"
           curl -s -X POST \
@@ -166,5 +165,3 @@ jobs:
             - 上传格式：原始二进制（未打包）
           files: dist/*
           make_latest: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
