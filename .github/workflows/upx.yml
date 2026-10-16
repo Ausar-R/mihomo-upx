@@ -24,27 +24,31 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      # ---------- 1. 获取 mihomo 最新 tag ----------
+      # ---------- 1. 获取 mihomo 最新 tag（tag 为 null/空 重新获取） ----------
       - name: 获取 mihomo 最新 tag
         id: mihomo
         run: |
-          JSON=$(curl -s https://api.github.com/repos/metacubex/mihomo/releases/latest)
-          TAG=$(echo "$JSON" | jq -r '.tag_name')
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "$JSON" > mihomo-latest.json
-          echo "检测到 mihomo 最新版本: $TAG"
+          i=0
+          while true; do
+            i=$((i + 1))
+            JSON=$(curl -s https://api.github.com/repos/metacubex/mihomo/releases/latest)
+            TAG=$(echo "$JSON" | jq -r '.tag_name // empty')
+            # 处理 tag 为 null / 空 的情况
+            if [ -n "$TAG" ] && [ "$TAG" != "null" ]; then
+              echo "$JSON" > mihomo-latest.json
+              echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+              echo "✅ 检测到 mihomo 最新版本: $TAG"
+              exit 0
+            fi
+            echo "⚠ 第 $i 次获取为空，1s 后重试..."
+            sleep 1
+          done
 
-      # ---------- 2. 判断当前仓库是否已存在该 tag（含 tag 为 null/空 的跳过） 并 按需推送 tag ----------
+      # ---------- 2. 判断当前仓库是否已存在该 tag 并 按需推送 tag ----------
       - name: 检查当前仓库是否已存在该 tag
         id: check
         run: |
           TAG="${{ steps.mihomo.outputs.tag }}"
-          # 处理 tag 为 null / 空 的情况
-          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
-            echo "already=skip" >> "$GITHUB_OUTPUT"
-            echo "✅ tag 为空或 null，跳过本次全部任务"
-            exit 0
-          fi
           # 查询当前仓库是否已存在同名的 tag 并按需推送 tag
           EXISTS=$(git ls-remote --tags origin "refs/tags/$TAG" | grep -c "refs/tags/$TAG" || true)
           if [ "$EXISTS" -ge 1 ]; then
