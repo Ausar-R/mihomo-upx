@@ -29,7 +29,7 @@ jobs:
         id: mihomo
         run: |
           i=0
-          while true; do
+          while [ "$i" -lt 45 ]; do
             i=$((i + 1))
             JSON=$(curl -s https://api.github.com/repos/metacubex/mihomo/releases/latest)
             TAG=$(echo "$JSON" | jq -r '.tag_name // empty')
@@ -40,8 +40,8 @@ jobs:
               echo "✅ 检测到 mihomo 最新版本: $TAG"
               exit 0
             fi
-            echo "⚠ 第 $i 次获取为空，1s 后重试..."
-            sleep 1
+            echo "⚠ 第 $i 次获取为空，10s 后重试..."
+            sleep 10
           done
 
       # ---------- 2. 判断当前仓库是否已存在该 tag 并 按需推送 tag ----------
@@ -49,6 +49,12 @@ jobs:
         id: check
         run: |
           TAG="${{ steps.mihomo.outputs.tag }}"
+          # 处理 tag 为 null / 空 的情况
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "already=skip" >> "$GITHUB_OUTPUT"
+            echo "✅ tag 为空或 null，跳过本次全部任务"
+            exit 0
+          fi
           # 查询当前仓库是否已存在同名的 tag 并按需推送 tag
           EXISTS=$(git ls-remote --tags origin "refs/tags/$TAG" | grep -c "refs/tags/$TAG" || true)
           if [ "$EXISTS" -ge 1 ]; then
