@@ -95,7 +95,7 @@ jobs:
         if: steps.check.outputs.already == ''
         uses: actions/setup-go@v7
         with:
-          go-version: src/go.mod
+          go-version-file: src/go.mod
           cache-dependency-path: src/go.sum
 
       # ---------- 5. 修改内核内嵌的更新检查地址 ----------
