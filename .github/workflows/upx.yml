@@ -131,7 +131,7 @@ jobs:
           build_one() {
             local name="$1" goarch="$2" goarm="$3"
             echo "🔨 编译 linux-${name} (GOARCH=${goarch} GOARM=${goarm:-n/a})"
-            local out="$(pwd)/dist/mihomo-linux-${name}-${TAG}"
+            local out="$(pwd)/dist/mihomo-linux-${name}"
             if ( cd "$SRC_DIR" && \
                  GOOS=linux GOARCH="$goarch" GOARM="$goarm" \
                  go build -trimpath -ldflags "-s -w -X github.com/metacubex/mihomo/constant.Version=${TAG}" \
@@ -162,7 +162,7 @@ jobs:
         if: steps.check.outputs.already == '' && steps.build.outputs.insufficient != 'true'
         run: |
           for bin in dist/*; do
-            [ -e "$bin" ] || { echo "没有二进制可处理"; exit 0; }
+            [ -f "$bin" ] || { echo "没有二进制可处理"; exit 0; }
             before=$(stat -c%s "$bin")
             upx --lzma --best "$bin" || echo "⚠  UPX 对 $(basename "$bin") 失败，保留原文件"
             after=$(stat -c%s "$bin")
@@ -177,11 +177,14 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHANNEL_FILES: ${{ secrets.TG_CHANNEL_FILES }}
         run: |
+          TAG="${{ steps.mihomo.outputs.tag }}"
           for bin in dist/*; do
-            [ -e "$bin" ] || continue
-            name=$(basename "$bin")
+            [ -f "$bin" ] || continue
+            name="$(basename "$bin")-${TAG}"
             # 上传文件（每个文件单独一条消息）
-            result=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" -F "chat_id=${TG_CHANNEL_FILES}" -F "document=@${bin}")
+            result=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+              -F "chat_id=${TG_CHANNEL_FILES}" \
+              -F "document=@-;filename=${name}" < "$bin")
             ok=$(echo "$result" | jq -r '.ok')
             if [ "$ok" = "true" ]; then
               echo "✅ 已上传 $name 到 文件频道"
@@ -209,29 +212,12 @@ jobs:
 
 
       # ---------- 10. 将 UPX 后的二进制打包成 .gz ----------
-      - name: 去掉版本号并打包成 .gz
+      - name: 打包成 .gz
         if: steps.check.outputs.already == '' && steps.build.outputs.insufficient != 'true'
         run: |
           TAG="${{ steps.mihomo.outputs.tag }}"
-          # ① 打包前：把 mihomo-linux-${name}-${TAG} 重命名回 mihomo-linux-${name}
           for bin in dist/*; do
-            case "$bin" in
-              *.gz) continue ;;
-            esac
-            [ -e "$bin" ] || continue
-            base=$(basename "$bin")
-            # 仅当名字里带 "-${TAG}" 时才去掉它，避免误伤 version.txt 等
-            case "$base" in
-              *-"${TAG}")
-                new="${base%-${TAG}}"
-                mv -f "dist/$base" "dist/$new"
-                echo "🔁 重命名 $base → $new"
-                ;;
-            esac
-          done
-          # ② 压缩成 .gz（此时已不含版本号）
-          for bin in dist/*; do
-            [ -e "$bin" ] || { echo "没有文件可打包"; exit 0; }
+            [ -f "$bin" ] || { echo "没有文件可打包"; exit 0; }
             case "$bin" in
               *.gz) continue ;;          # 跳过已是 .gz 的
             esac
